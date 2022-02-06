@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -17,9 +18,85 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
+var IMAGE_CACHE_URL = "http://localhost:50441/file_upload/cacheFeatureVector"
+var MONGO_DB_SERVER = "mongodb://webcom:webcom@127.0.0.1:27017/webcom"
+var THREAD_NUM = 3
+
+var wg sync.WaitGroup
+var count = 0
+
+func getItemMap(cursor *mongo.Cursor, ctx context.Context, itemMap *bson.M, mu *sync.Mutex) bool {
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !cursor.Next(ctx) {
+		log.Println("data end")
+		return false
+	}
+
+	count++
+	fmt.Println(count)
+
+	if err := cursor.Decode(itemMap); err != nil {
+		log.Fatal(err)
+		return false
+	}
+
+	return true
+}
+
+func sendThumbnailToCache(cursor *mongo.Cursor, ctx context.Context, mu *sync.Mutex) {
+	defer wg.Done()
+
+	for {
+
+		var itemMap bson.M
+		if !getItemMap(cursor, ctx, &itemMap, mu) {
+			return
+		}
+
+		imgMap := itemMap["image"].(bson.M)
+		currentMap := imgMap["current"].(bson.M)
+		thumbnailUrl := currentMap["thumbnail"].(string)
+
+		fmt.Println(thumbnailUrl)
+
+		respGet, err := http.Get(thumbnailUrl)
+		if err != nil {
+			log.Fatal(err)
+			respGet.Body.Close()
+			continue
+		}
+
+		byteArray, _ := ioutil.ReadAll(respGet.Body)
+		respGet.Body.Close()
+
+		body := &bytes.Buffer{}
+		mw := multipart.NewWriter(body)
+
+		urlslice := strings.Split(thumbnailUrl, "/")
+		filename := urlslice[len(urlslice)-1]
+
+		fw, _ := mw.CreateFormFile("file", filename)
+
+		fw.Write(byteArray)
+		err = mw.Close()
+
+		respPost, _ := http.Post(IMAGE_CACHE_URL, mw.FormDataContentType(), body)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		respPost.Body.Close()
+
+	}
+
+}
+
 func main() {
 
-	client, err := mongo.Connect(context.TODO(), options.Client().ApplyURI("mongodb://webcom:webcom@127.0.0.1:27017/webcom"))
+	client, err := mongo.Connect(context.TODO(), options.Client().ApplyURI(MONGO_DB_SERVER))
 
 	if err != nil {
 		log.Fatal(err)
@@ -30,13 +107,14 @@ func main() {
 			panic(err)
 		}
 	}()
+
 	// Ping the primary
 	if err := client.Ping(context.TODO(), readpref.Primary()); err != nil {
 		panic(err)
 	}
 	fmt.Println("Successfully connected and pinged.")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
 	defer cancel()
 
 	col := client.Database("webcom").Collection("webcom")
@@ -44,53 +122,17 @@ func main() {
 
 	if err != nil {
 		log.Fatal(err)
-		return
 	}
 
 	defer cursor.Close(ctx)
 
-	for cursor.Next(ctx) {
-		var itemMap bson.M
-		if err = cursor.Decode(&itemMap); err != nil {
-			log.Fatal(err)
-			return
-		}
+	var mu sync.Mutex
+	wg.Add(THREAD_NUM)
 
-		imgMap := itemMap["image"].(bson.M)
-		currentMap := imgMap["current"].(bson.M)
-		thumbnailUrl := currentMap["thumbnail"].(string)
-
-		fmt.Println(thumbnailUrl)
-
-		resp, err := http.Get(thumbnailUrl)
-		if err != nil {
-			log.Fatal(err)
-			return
-		}
-		defer resp.Body.Close()
-
-		byteArray, _ := ioutil.ReadAll(resp.Body)
-
-		body := &bytes.Buffer{}
-		mw := multipart.NewWriter(body)
-
-		urlslice := strings.Split(thumbnailUrl, "/")
-		filename := urlslice[len(urlslice)-1]
-
-		fw, _ := mw.CreateFormFile("file", filename)
-
-		//_, err = io.Copy(fw, byteArray)
-		fw.Write(byteArray)
-		contentType := mw.FormDataContentType()
-		err = mw.Close()
-
-		url := "http://localhost:53197/file_upload/cacheFeatureVector"
-		resp2, _ := http.Post(url, contentType, body)
-		if err != nil {
-			log.Fatal(err)
-			return
-		}
-
-		resp2.Body.Close()
+	for i := 0; i < THREAD_NUM; i++ {
+		go sendThumbnailToCache(cursor, ctx, &mu)
 	}
+
+	wg.Wait()
+	fmt.Println("END")
 }
