@@ -18,9 +18,9 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
-var IMAGE_CACHE_URL = "http://localhost:50441/file_upload/cacheFeatureVector"
+var IMAGE_CACHE_URL = "http://localhost:52430/file_upload/cacheFeatureVector"
 var MONGO_DB_SERVER = "mongodb://webcom:webcom@127.0.0.1:27017/webcom"
-var THREAD_NUM = 3
+var THREAD_NUM = 4
 
 var wg sync.WaitGroup
 var count = 0
@@ -114,7 +114,7 @@ func main() {
 	}
 	fmt.Println("Successfully connected and pinged.")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3000*time.Second)
 	defer cancel()
 
 	col := client.Database("webcom").Collection("webcom")
