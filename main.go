@@ -18,7 +18,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
-var IMAGE_CACHE_URL = "http://localhost:52430/file_upload/cacheFeatureVector"
+var IMAGE_CACHE_URL = "http://localhost/file_upload/cacheFeatureVector"
 var MONGO_DB_SERVER = "mongodb://webcom:webcom@127.0.0.1:27017/webcom"
 var THREAD_NUM = 4
 
@@ -60,18 +60,24 @@ func sendThumbnailToCache(cursor *mongo.Cursor, ctx context.Context, mu *sync.Mu
 		currentMap := imgMap["current"].(bson.M)
 		thumbnailUrl := currentMap["thumbnail"].(string)
 
-		fmt.Println(thumbnailUrl)
-
-		respGet, err := http.Get(thumbnailUrl)
+		fmt.Println(time.Now().Local().String() + " GET : " + thumbnailUrl)
+		client := http.Client{
+			Timeout: 15 * time.Second,
+		}
+		respGet, err := client.Get(thumbnailUrl)
 		if err != nil {
-			log.Fatal(err)
-			respGet.Body.Close()
+			//log.Fatal(err)
+			log.Println("to continue")
+			log.Println(err)
+			// respGet.Body.Close()
 			continue
 		}
 
-		byteArray, _ := ioutil.ReadAll(respGet.Body)
-		respGet.Body.Close()
-
+		var byteArray []byte
+		if respGet != nil {
+			byteArray, _ = ioutil.ReadAll(respGet.Body)
+			respGet.Body.Close()
+		}
 		body := &bytes.Buffer{}
 		mw := multipart.NewWriter(body)
 
@@ -83,13 +89,19 @@ func sendThumbnailToCache(cursor *mongo.Cursor, ctx context.Context, mu *sync.Mu
 		fw.Write(byteArray)
 		err = mw.Close()
 
-		respPost, _ := http.Post(IMAGE_CACHE_URL, mw.FormDataContentType(), body)
+		respPost, err := http.Post(IMAGE_CACHE_URL, mw.FormDataContentType(), body)
 		if err != nil {
+			log.Fatal("post error")
 			log.Fatal(err)
+			continue
 		}
 
-		respPost.Body.Close()
-
+		if respPost != nil {
+			if respPost.StatusCode >= 400 {
+				log.Println("error : " + respPost.Status)
+			}
+			respPost.Body.Close()
+		}
 	}
 
 }
